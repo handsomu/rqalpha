@@ -19,7 +19,7 @@ from decimal import Decimal, getcontext
 import six
 
 from rqalpha.api.api_base import decorate_api_exc, instruments, cal_style, register_api
-from rqalpha.const import DEFAULT_ACCOUNT_TYPE, EXECUTION_PHASE, SIDE, ORDER_TYPE
+from rqalpha.const import DEFAULT_ACCOUNT_TYPE, EXECUTION_PHASE, SIDE, ORDER_TYPE, POSITION_EFFECT
 from rqalpha.environment import Environment
 from rqalpha.execution_context import ExecutionContext
 from rqalpha.model.instrument import Instrument
@@ -93,6 +93,7 @@ def order_shares(id_or_ins, amount, price=None, style=None):
     """
     if amount == 0:
         # 如果下单量为0，则认为其并没有发单，则直接返回None
+        user_system_log.warn(_(u"Order Creation Failed: Order amount is 0."))
         return None
     style = cal_style(price, style)
     if isinstance(style, LimitOrder):
@@ -109,18 +110,21 @@ def order_shares(id_or_ins, amount, price=None, style=None):
 
     if amount > 0:
         side = SIDE.BUY
+        position_effect = POSITION_EFFECT.OPEN
     else:
         amount = abs(amount)
         side = SIDE.SELL
+        position_effect = POSITION_EFFECT.CLOSE
 
     round_lot = int(env.get_instrument(order_book_id).round_lot)
 
-    try:
-        amount = int(Decimal(amount) / Decimal(round_lot)) * round_lot
-    except ValueError:
-        amount = 0
+    if side == SIDE.BUY:
+        try:
+            amount = int(Decimal(amount) / Decimal(round_lot)) * round_lot
+        except ValueError:
+            amount = 0
 
-    r_order = Order.__from_create__(order_book_id, amount, side, style, None)
+    r_order = Order.__from_create__(order_book_id, amount, side, style, position_effect)
 
     if amount == 0:
         # 如果计算出来的下单量为0, 则不生成Order, 直接返回None
@@ -137,7 +141,7 @@ def order_shares(id_or_ins, amount, price=None, style=None):
 
 def _sell_all_stock(order_book_id, amount, style):
     env = Environment.get_instance()
-    order = Order.__from_create__(order_book_id, amount, SIDE.SELL, style, None)
+    order = Order.__from_create__(order_book_id, amount, SIDE.SELL, style, POSITION_EFFECT.CLOSE)
     if amount == 0:
         order.mark_rejected(_(u"Order Creation Failed: 0 order quantity"))
         return order
@@ -241,15 +245,14 @@ def order_value(id_or_ins, cash_amount, price=None, style=None):
         return
 
     account = env.portfolio.accounts[DEFAULT_ACCOUNT_TYPE.STOCK.name]
-    round_lot = int(env.get_instrument(order_book_id).round_lot)
 
     if cash_amount > 0:
         cash_amount = min(cash_amount, account.cash)
 
     if isinstance(style, MarketOrder):
-        amount = int(Decimal(cash_amount) / Decimal(price) / Decimal(round_lot)) * round_lot
+        amount = int(Decimal(cash_amount) / Decimal(price))
     else:
-        amount = int(Decimal(cash_amount) / Decimal(style.get_limit_price()) / Decimal(round_lot)) * round_lot
+        amount = int(Decimal(cash_amount) / Decimal(style.get_limit_price()))
 
     # if the cash_amount is larger than you current security’s position,
     # then it will sell all shares of this security.
